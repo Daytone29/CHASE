@@ -1,0 +1,9 @@
+[Unit]
+Description=BEE-EPT-UA913 Autopilot
+
+[Service]
+Type=oneshot
+ExecStart=/etc/systemd/system/run_autopilot.sh
+
+[Install]
+WantedBy=multi-user.target
