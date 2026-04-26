@@ -1,10 +1,17 @@
 import logging
+import os
 import definitions as vars
 from datetime import datetime
 
 def init_logger():
     logger = logging.getLogger(vars.logger_name)
     logs_directory = vars.logger_directory
+
+    os.makedirs(logs_directory, exist_ok=True)
+
+    if logger.handlers:
+        return logger
+
     logger.setLevel(logging.DEBUG)
     log_file_handler = logging.FileHandler(
         f'{logs_directory}/log_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log')

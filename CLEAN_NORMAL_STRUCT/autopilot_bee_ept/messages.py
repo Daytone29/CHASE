@@ -91,8 +91,8 @@ command_ready_hold_stopped = {
     }
 
 command_ready_hold_tracking = {
-    "log_debug": "READY HOLD RC: roll={0}, pitch={1}, yaw={2}, throttle={3}",
-    "console": "READY HOLD RC: roll={0}, pitch={1}, yaw={2}, throttle={3}"
+    "log_debug": "READY FINAL RC: roll={0}, pitch={1}, yaw={2}, throttle={3}",
+    "console": "READY FINAL RC: roll={0}, pitch={1}, yaw={2}, throttle={3}"
     }
 
 command_attack_started = {
@@ -111,8 +111,8 @@ command_attack_no_target = {
     }
 
 command_attack_tracking = {
-    "log_debug": "ATACK RC: roll={0}, pitch={1}, yaw={2}, throttle={3}, error=({4:.3f}, {5:.3f})",
-    "console": "ATACK RC: roll={0}, pitch={1}, yaw={2}, throttle={3}, error=({4:.3f}, {5:.3f})"
+    "log_debug": "ATACK FINAL RC: roll={0}, pitch={1}, yaw={2}, throttle={3}",
+    "console": "ATACK FINAL RC: roll={0}, pitch={1}, yaw={2}, throttle={3}"
     }
 
 telemetry_requestor_done = {

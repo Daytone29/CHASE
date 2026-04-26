@@ -2,6 +2,7 @@ import struct
 import time
 
 # MSP command IDs
+MSP_RAW_IMU = 102
 MSP_ANALOG = 110
 MSP_ALTITUDE = 109
 

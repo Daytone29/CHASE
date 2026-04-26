@@ -19,12 +19,21 @@ def _route_telemetry_by_mode(now, last_requested_at):
 
     if bee_state == 'OFF':
         off_interval = vars.telemetry_off_interval
+        _queue_telemetry_command('TELEMETRY', 2, 'MSP_RAW_IMU', now, last_requested_at, off_interval)
         _queue_telemetry_command('MONITOR', 2, 'MSP_ANALOG', now, last_requested_at, off_interval)
         _queue_telemetry_command('TELEMETRY', 2, 'MSP_ALTITUDE', now, last_requested_at, off_interval)
         _queue_telemetry_command('TELEMETRY', 1, 'MSP_RC', now, last_requested_at, off_interval)
         return bee_state
 
     if bee_state == 'ATACK':
+        _queue_telemetry_command(
+            'TELEMETRY',
+            1,
+            'MSP_RAW_IMU',
+            now,
+            last_requested_at,
+            vars.telemetry_attack_imu_interval,
+        )
         _queue_telemetry_command(
             'MONITOR',
             2,
@@ -51,6 +60,14 @@ def _route_telemetry_by_mode(now, last_requested_at):
         )
         return bee_state
 
+    _queue_telemetry_command(
+        'TELEMETRY',
+        1,
+        'MSP_RAW_IMU',
+        now,
+        last_requested_at,
+        vars.telemetry_ready_imu_interval,
+    )
     _queue_telemetry_command(
         'MONITOR',
         2,

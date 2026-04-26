@@ -1,4 +1,5 @@
 import time
+import math
 import struct
 import queue
 import messages
@@ -39,6 +40,34 @@ def _reset_tracking_state(clear_caught=False):
     autopilot.state['prev_target_size'] = 0.0
 
 
+def _reset_attack_rc_state(roll=None, pitch=None, yaw=None, throttle=None):
+    if roll is None:
+        roll = vars.default_roll
+    if pitch is None:
+        pitch = vars.default_pitch
+    if yaw is None:
+        yaw = vars.default_yaw
+    if throttle is None:
+        throttle = vars.default_throttle
+
+    roll = _clamp_rc(roll)
+    pitch = _clamp_rc(pitch)
+    yaw = _clamp_rc(yaw)
+    throttle = _clamp_rc(throttle)
+
+    autopilot.state['attack_base_roll'] = roll
+    autopilot.state['attack_base_pitch'] = pitch
+    autopilot.state['attack_base_yaw'] = yaw
+    autopilot.state['attack_base_throttle'] = throttle
+    autopilot.state['attack_output_roll'] = roll
+    autopilot.state['attack_output_pitch'] = pitch
+    autopilot.state['attack_output_yaw'] = yaw
+    autopilot.state['attack_output_throttle'] = throttle
+    autopilot.state['prev_attack_error_x'] = 0.0
+    autopilot.state['prev_attack_time'] = None
+    autopilot.state['prev_target_size'] = 0.0
+
+
 def _ensure_capture_tracking():
     tracker_controller = ensure_tracking_worker()
     tracker_controller.start_tracking()
@@ -52,6 +81,7 @@ def _apply_mode_state(new_mode, previous_mode):
         stop_attack_worker()
         autopilot.state['ready_hold_pending_capture'] = False
         _reset_tracking_state(clear_caught=True)
+        _reset_attack_rc_state()
 
         if tracking_controller is not None:
             tracking_controller.stop_tracking()
@@ -62,9 +92,17 @@ def _apply_mode_state(new_mode, previous_mode):
     if new_mode == 'READY':
         stop_attack_worker()
         stop_ready_hold_worker()
+        _capture_ready_hold_values()
+        _reset_attack_rc_state(
+            autopilot.state.get('ready_hold_roll', vars.default_roll),
+            autopilot.state.get('ready_hold_pitch', vars.default_pitch),
+            autopilot.state.get('ready_hold_yaw', vars.default_yaw),
+            autopilot.state.get('ready_hold_throttle', vars.default_throttle),
+        )
         autopilot.state['ready_hold_pending_capture'] = False
         _ensure_capture_tracking()
         _clear_command_queue()
+        start_ready_hold_worker()
         return
 
     if new_mode == 'ATACK':
@@ -154,6 +192,29 @@ def _slew_rc(current_value, target_value, max_step):
     return current_value - max_step
 
 
+def _limit_attack_pitch(current_pitch, target_pitch):
+    max_pitch_deg = float(getattr(vars, 'attack_max_pitch_deg', 15.0))
+    current_pitch_deg = abs(float(autopilot.state.get('acc_pitch_deg', 0.0) or 0.0))
+
+    if current_pitch_deg < max_pitch_deg:
+        return _clamp_rc(target_pitch)
+
+    current_pitch = _clamp_rc(current_pitch)
+    target_pitch = _clamp_rc(target_pitch)
+    neutral_pitch = _clamp_rc(vars.default_pitch)
+
+    current_offset = current_pitch - neutral_pitch
+    target_offset = target_pitch - neutral_pitch
+
+    if current_offset > 0 and target_offset > current_offset:
+        return current_pitch
+
+    if current_offset < 0 and target_offset < current_offset:
+        return current_pitch
+
+    return target_pitch
+
+
 def _get_last_manual_rc(channel_name, fallback):
     snapshot_key = f'last_manual_{channel_name}'
     if snapshot_key in autopilot.state:
@@ -171,26 +232,39 @@ def _capture_ready_hold_values():
 
 
 def _run_ready_hold_worker():
-    log_counter = 0
-
     while not ready_hold_stop_event.is_set():
         if autopilot.state.get('bee_state') != 'READY':
             break
 
-        roll = _clamp_rc(autopilot.state.get('ready_hold_roll', vars.default_roll))
-        pitch = _clamp_rc(autopilot.state.get('ready_hold_pitch', vars.default_pitch))
-        yaw = _clamp_rc(autopilot.state.get('ready_hold_yaw', vars.default_yaw))
-        throttle = _clamp_rc(autopilot.state.get('ready_hold_throttle', vars.default_throttle))
+        target_roll = _clamp_rc(autopilot.state.get('ready_hold_roll', vars.default_roll))
+        target_pitch = _clamp_rc(autopilot.state.get('ready_hold_pitch', vars.default_pitch))
+        target_yaw = _clamp_rc(autopilot.state.get('ready_hold_yaw', vars.default_yaw))
+        target_throttle = _clamp_rc(autopilot.state.get('ready_hold_throttle', vars.default_throttle))
+
+        current_roll = _clamp_rc(autopilot.state.get('roll', target_roll))
+        current_pitch = _clamp_rc(autopilot.state.get('pitch', target_pitch))
+        current_yaw = _clamp_rc(autopilot.state.get('yaw', target_yaw))
+        current_throttle = _clamp_rc(autopilot.state.get('throttle', target_throttle))
+
+        roll = _slew_rc(current_roll, target_roll, vars.attack_roll_max_step)
+        pitch = _slew_rc(current_pitch, target_pitch, vars.attack_pitch_max_step)
+        yaw = _slew_rc(current_yaw, target_yaw, vars.attack_yaw_max_step)
+        throttle = _slew_rc(current_throttle, target_throttle, vars.attack_throttle_max_step)
 
         mavs.send_ready_hold_rc(roll, pitch, yaw, throttle)
 
-        log_counter += 1
-        if log_counter % 50 == 0:
+        ready_hold_rc = (roll, pitch, yaw, throttle)
+        if autopilot.state.get('last_logged_ready_hold_rc') != ready_hold_rc:
+            autopilot.state['last_logged_ready_hold_rc'] = ready_hold_rc
             messages.display(messages.command_ready_hold_tracking, [roll, pitch, yaw, throttle])
+
+        if roll == target_roll and pitch == target_pitch and yaw == target_yaw and throttle == target_throttle:
+            break
 
         time.sleep(vars.ready_hold_loop_interval)
 
     autopilot.state['ready_hold_active'] = False
+    autopilot.state['last_logged_ready_hold_rc'] = None
     messages.display(messages.command_ready_hold_stopped)
 
 
@@ -202,6 +276,7 @@ def start_ready_hold_worker():
 
     ready_hold_stop_event.clear()
     autopilot.state['ready_hold_active'] = True
+    autopilot.state['last_logged_ready_hold_rc'] = None
     ready_hold_thread = threading.Thread(target=_run_ready_hold_worker, daemon=True)
     ready_hold_thread.start()
     messages.display(messages.command_ready_hold_started)
@@ -218,8 +293,6 @@ def stop_ready_hold_worker():
 
 
 def _run_attack_worker():
-    log_counter = 0
-
     while not attack_stop_event.is_set():
         if autopilot.state.get('bee_state') != 'ATACK':
             break
@@ -272,6 +345,8 @@ def _run_attack_worker():
         current_yaw = autopilot.state.get('attack_output_yaw', autopilot.state.get('yaw', base_yaw))
         current_throttle = autopilot.state.get('attack_output_throttle', autopilot.state.get('throttle', base_throttle))
 
+        target_pitch = _limit_attack_pitch(current_pitch, target_pitch)
+
         roll = _slew_rc(current_roll, target_roll, vars.attack_roll_max_step)
         pitch = _slew_rc(current_pitch, target_pitch, vars.attack_pitch_max_step)
         yaw = _slew_rc(current_yaw, target_yaw, vars.attack_yaw_max_step)
@@ -287,13 +362,15 @@ def _run_attack_worker():
 
         mavs.send_attack_rc(roll, pitch, yaw, throttle)
 
-        log_counter += 1
-        if log_counter % 50 == 0:
-            messages.display(messages.command_attack_tracking, [roll, pitch, yaw, throttle, error_x, error_y])
+        attack_rc = (roll, pitch, yaw, throttle)
+        if autopilot.state.get('last_logged_attack_rc') != attack_rc:
+            autopilot.state['last_logged_attack_rc'] = attack_rc
+            messages.display(messages.command_attack_tracking, [roll, pitch, yaw, throttle])
 
         time.sleep(vars.attack_loop_interval)
 
     autopilot.state['attack_active'] = False
+    autopilot.state['last_logged_attack_rc'] = None
     messages.display(messages.command_attack_stopped)
 
 
@@ -305,6 +382,7 @@ def start_attack_worker():
 
     attack_stop_event.clear()
     autopilot.state['attack_active'] = True
+    autopilot.state['last_logged_attack_rc'] = None
     autopilot.state['attack_output_roll'] = _clamp_rc(autopilot.state.get('roll', autopilot.state.get('attack_base_roll', vars.default_roll)))
     autopilot.state['attack_output_pitch'] = _clamp_rc(autopilot.state.get('pitch', autopilot.state.get('attack_base_pitch', vars.default_pitch)))
     autopilot.state['attack_output_yaw'] = _clamp_rc(autopilot.state.get('yaw', autopilot.state.get('attack_base_yaw', vars.default_yaw)))
@@ -414,6 +492,22 @@ def command_telemetry_viable_status(telemetry):
             messages.command_telemetry_current_altitude, 
             [altitude])
 
+
+def command_telemetry_raw_imu(telemetry):
+    if len(telemetry) < 18:
+        return
+
+    imu_values = struct.unpack('<9h', telemetry[:18])
+    acc_x, acc_y, acc_z = imu_values[0:3]
+
+    autopilot.state['acc_x'] = acc_x
+    autopilot.state['acc_y'] = acc_y
+    autopilot.state['acc_z'] = acc_z
+
+    horizontal_norm = math.sqrt((acc_y * acc_y) + (acc_z * acc_z))
+    autopilot.state['acc_roll_deg'] = math.degrees(math.atan2(acc_y, acc_z)) if horizontal_norm > 0 else 0.0
+    autopilot.state['acc_pitch_deg'] = math.degrees(math.atan2(-acc_x, horizontal_norm)) if horizontal_norm > 0 else 0.0
+
 def command_telemetry_mode_change(telemetry):
     rc_chs = struct.unpack('<' + 'H' * (len(telemetry) // 2), telemetry)
 
@@ -421,10 +515,6 @@ def command_telemetry_mode_change(telemetry):
     autopilot.state['pitch'] = rc_chs[1]
     autopilot.state['yaw'] = rc_chs[2]
     autopilot.state['throttle'] = rc_chs[3]
-    autopilot.state['last_manual_roll'] = rc_chs[0]
-    autopilot.state['last_manual_pitch'] = rc_chs[1]
-    autopilot.state['last_manual_yaw'] = rc_chs[2]
-    autopilot.state['last_manual_throttle'] = rc_chs[3]
     autopilot.state['aux3'] = rc_chs[6]
     autopilot.state['aux4'] = rc_chs[7]
     autopilot.state['aux5'] = rc_chs[13] 
@@ -439,6 +529,12 @@ def command_telemetry_mode_change(telemetry):
         autopilot_mode = 'READY'
     elif 1950 <= mode_aux_raw <= 2050:
         autopilot_mode = 'ATACK'
+
+    if autopilot_mode in ('OFF', 'READY') and not autopilot.state.get('attack_active') and not autopilot.state.get('ready_hold_active'):
+        autopilot.state['last_manual_roll'] = rc_chs[0]
+        autopilot.state['last_manual_pitch'] = rc_chs[1]
+        autopilot.state['last_manual_yaw'] = rc_chs[2]
+        autopilot.state['last_manual_throttle'] = rc_chs[3]
     
     if autopilot_mode != autopilot.state['bee_state']:
         previous_mode = autopilot.state['bee_state']
@@ -470,12 +566,15 @@ def command_telemetry(params):
         if telemetry != {}:
             if params['target'] == 'MSP_ALTITUDE':
                 command_telemetry_viable_status(telemetry)
+            if params['target'] == 'MSP_RAW_IMU':
+                command_telemetry_raw_imu(telemetry)
             if params['target'] == 'MSP_RC':
                 command_telemetry_mode_change(telemetry)
                         
-        messages.display(
-            messages.command_telemetry_autopilot_state, 
-            [autopilot.state])
+        if autopilot.state.get('bee_state') not in ('READY', 'ATACK'):
+            messages.display(
+                messages.command_telemetry_autopilot_state,
+                [autopilot.state])
     except Exception as ex:
         messages.display(
             messages.telemetry_reconnection, [ex])

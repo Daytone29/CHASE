@@ -41,6 +41,7 @@ class RCTrackerController:
         self.shutdown_requested = threading.Event()
         self.active_attack_bbox = None
         self.attack_tracker_initialized = False
+        self.visual_bbox_scale = 2.0
         
         # Параметри масштабування bbox через AUX7 (зменшено у 3 рази)
         self.bbox_min_size = (17, 17)    # Мінімальний розмір (50/3 ≈ 17)
@@ -157,6 +158,21 @@ class RCTrackerController:
         x = (self.resolution[0] - width) // 2
         y = (self.resolution[1] - height) // 2
         return (x, y, width, height)
+
+    def _scale_bbox_for_display(self, bbox: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+        x, y, w, h = bbox
+        scale = max(1.0, float(self.visual_bbox_scale))
+        scaled_w = min(self.resolution[0], max(1, int(round(w * scale))))
+        scaled_h = min(self.resolution[1], max(1, int(round(h * scale))))
+
+        center_x = x + w / 2.0
+        center_y = y + h / 2.0
+        scaled_x = int(round(center_x - scaled_w / 2.0))
+        scaled_y = int(round(center_y - scaled_h / 2.0))
+
+        scaled_x = max(0, min(scaled_x, self.resolution[0] - scaled_w))
+        scaled_y = max(0, min(scaled_y, self.resolution[1] - scaled_h))
+        return (scaled_x, scaled_y, scaled_w, scaled_h)
 
     def _reset_attack_tracker(self):
         if self.tracker is not None:
@@ -306,42 +322,43 @@ class RCTrackerController:
                 last_frame_time = current_frame_time
                 frame_clean = frame.copy()
 
-                display_bbox = self._build_center_bbox(*self.current_bbox_size)
+                tracking_bbox = self._build_center_bbox(*self.current_bbox_size)
                 confidence = 0.0
 
                 if attack_mode:
                     if not self.attack_tracker_initialized:
-                        self.tracker.init(frame, display_bbox)
-                        self.active_attack_bbox = display_bbox
+                        self.tracker.init(frame, tracking_bbox)
+                        self.active_attack_bbox = tracking_bbox
                         self.attack_tracker_initialized = True
                         confidence = 1.0
                     else:
                         result = self.tracker.update(frame)
                         if result.bbox:
-                            display_bbox = result.bbox
-                            self.active_attack_bbox = display_bbox
+                            tracking_bbox = result.bbox
+                            self.active_attack_bbox = tracking_bbox
                             confidence = result.confidence
                         else:
                             self.active_attack_bbox = None
                             self._update_tracking_state(None)
 
                     if self.active_attack_bbox is not None:
-                        display_bbox = self.active_attack_bbox
-                        self._update_tracking_state(display_bbox, confidence)
+                        tracking_bbox = self.active_attack_bbox
+                        self._update_tracking_state(tracking_bbox, confidence)
                     else:
-                        display_bbox = self._build_center_bbox(*self.current_bbox_size)
+                        tracking_bbox = self._build_center_bbox(*self.current_bbox_size)
                 else:
                     if self.attack_tracker_initialized:
                         self._reset_attack_tracker()
 
-                    self._update_capture_state(display_bbox)
+                    self._update_capture_state(tracking_bbox)
 
+                display_bbox = self._scale_bbox_for_display(tracking_bbox)
                 preview = self._draw_bbox_preview(frame_clean, display_bbox)
                 x, y, w, h = display_bbox
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
                 if attack_mode and self.active_attack_bbox is not None:
-                    error_x, error_y = self._calculate_center_error(display_bbox)
+                    error_x, error_y = self._calculate_center_error(tracking_bbox)
                     frame_center_x = self.resolution[0] // 2
                     frame_center_y = self.resolution[1] // 2
                     cv2.drawMarker(frame, (frame_center_x, frame_center_y), (0, 0, 255), cv2.MARKER_CROSS, 18, 1)
